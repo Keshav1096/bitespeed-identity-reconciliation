@@ -1,12 +1,22 @@
-// src/index.ts
+// package imports
 import express, { Request, Response } from "express";
+import dotenv from "dotenv";
+
+// file imports
+import router from "./routes";
+
+dotenv.config();
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
-app.get("/", (req: Request, res: Response) => {
-  res.send("Hello World!");
+app.use(express.json());
+
+app.get("/healthz", (req: Request, res: Response) => {
+  res.send("OK!");
 });
+
+app.use("/", router);
 
 app.listen(port, () => {
   console.log(`Server is listening at http://localhost:${port}`);
