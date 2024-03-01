@@ -10,7 +10,6 @@ export interface DatabaseConfig {
 
 // Define type for the result of a database query to retrieve contacts
 export interface QueryResult {
-  // rowCount: number;
   rows: Contact[];
 }
 
