@@ -17,3 +17,7 @@ export interface ContactJson {
   phoneNumbers: string[]; // first element being phoneNumber of primary contact
   secondaryContactIds: number[];
 }
+
+export interface ContactResponse {
+  contact: ContactJson;
+}
