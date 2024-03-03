@@ -1,5 +1,8 @@
 import { Pool, QueryResult } from "pg";
 import { DatabaseConfig } from "../types";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const dbConfig: DatabaseConfig = {
   user: process.env.PG_USER_NAME || "postgres",
