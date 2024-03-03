@@ -1,151 +1,113 @@
 import {
-  getContactBasedOnCondition,
-  getContactBasedOnId,
+  getPrimaryAndSecondaryContactsBasedOnPrimaryId,
   insertContact,
-  readContacts,
   readExistingContact,
+  readPrimaryContacts,
   updateContact,
 } from "../model";
-import { Contact, ContactJson, IdentifyRequest } from "../types";
+import {
+  Contact,
+  ContactJson,
+  ContactResponse,
+  IdentifyRequest,
+} from "../types";
 
 import { getLatestContact } from "../utils";
 
-async function checkExistingContact(
-  email: string,
-  phoneNumber: string
-): Promise<boolean> {
-  return await readExistingContact(email, phoneNumber);
-}
+export async function identifyContact(
+  identifyReq: IdentifyRequest
+): Promise<ContactResponse> {
+  let primaryContactId: number = 0;
+  let skipContactCreation: boolean = false;
 
-export async function identifyContact(identifyReq: IdentifyRequest) {
-  /**
-   * 1. based on email or phonenumber, fetch the record from db. If the record has linkPrecedence as secondary, fetch the linkedId which is always primary
-   * 2. fetch all records with LinkedId as primary records id.
-   */
   const { email, phoneNumber } = identifyReq;
-  // Fetch the matching record
-  let matchingContacts: Contact[] = await readContacts(
-    identifyReq.email,
-    identifyReq.phoneNumber
+
+  // Check if primary contact exists
+  const primaryContacts: Contact[] = await readPrimaryContacts(
+    email,
+    phoneNumber
   );
 
-  // Initiaizing response structure
-  let responseContact: ContactJson = {
-    primaryContactId: 0,
-    emails: [],
-    phoneNumbers: [],
-    secondaryContactIds: [],
-  };
+  const isPrimaryContactPresent = checkIfPrimaryContactExists(primaryContacts);
 
-  if (matchingContacts && matchingContacts.length === 0) {
-    // There are no pre existing records
-    // Create a new record here
-    return await createNewContact(email, phoneNumber, responseContact);
-  }
-
-  // Find primary contact from list of matching contacts
-  let primaryContact: Contact | undefined = matchingContacts.find(
-    (matchingContact) => matchingContact.linkPrecedence === "primary"
-  );
-
-  let primaryContactId: number;
-  if (primaryContact === undefined) {
-    // get primary contact based on secondary contact id
-    primaryContactId = matchingContacts[0].linkedId!;
-    primaryContact = await getContactBasedOnId(primaryContactId!);
-  }
-
-  if (matchingContacts.length === 1) {
-    const isExistingContact = await checkExistingContact(email, phoneNumber);
-    if (!isExistingContact) {
-      // If there is no existing contact of the same type, create a new contact
-      let __return;
-      ({ __return, responseContact } = await handleNonExistingContact(
-        email,
-        phoneNumber,
-        responseContact
-      ));
-      return __return;
-    }
-  }
-
-  matchingContacts = matchingContacts.filter(
-    (contact) => contact.linkPrecedence === "primary"
-  );
-  if (matchingContacts.length > 1) {
-    // There are multiple records with link precedence as primary and matching email or phoneNumber (ideally maximum of two records can exist for a given combination of email and phoneNumber)
-    // Update the latest record to secondary link precedence
-
-    return await handleMultipleMatchingContacts(
-      matchingContacts,
-      responseContact
+  // If primary contact is not present, create a new contact
+  if (!isPrimaryContactPresent) {
+    const insertedContact: Contact = await createNewContact(
+      email,
+      phoneNumber,
+      "primary",
+      null
     );
+    primaryContactId = insertedContact.id!;
   }
 
-  responseContact.primaryContactId = primaryContact.id!;
+  // Check if two primary contacts are returned. If two are returned, set the latest contact as secondary
+  if (primaryContacts.length > 1) {
+    primaryContactId = await handleTwoPrimaryContacts(primaryContacts);
+    skipContactCreation = true;
+  } else if (primaryContacts.length === 1) {
+    primaryContactId = primaryContacts[0].id!;
+  }
 
-  responseContact.emails.push(primaryContact.email!);
-  responseContact.phoneNumbers.push(primaryContact.phoneNumber!);
-
-  const secondaryContacts: Contact[] = await getContactBasedOnCondition(
-    primaryContactId!,
-    "secondary"
+  // Since primary contact is present, check if exact contact is present
+  const isDuplicateContact: boolean = await checkExistingContact(
+    email,
+    phoneNumber
   );
 
-  secondaryContacts.forEach((secondaryContact) => {
-    responseContact.emails.push(secondaryContact.email!);
-    responseContact.phoneNumbers.push(secondaryContact.phoneNumber!);
-    responseContact.secondaryContactIds.push(secondaryContact.id!);
-  });
+  if (!isDuplicateContact && !skipContactCreation) {
+    // Add contact as secondary
+    await createNewContact(email, phoneNumber, "secondary", primaryContactId);
+  }
 
-  responseContact.emails = [...new Set(responseContact.emails.filter(Boolean))];
-  responseContact.phoneNumbers = [
-    ...new Set(responseContact.phoneNumbers.filter(Boolean)),
-  ];
-  responseContact.secondaryContactIds = [
-    ...new Set(responseContact.secondaryContactIds.filter(Boolean)),
-  ];
-  return { contact: responseContact };
+  const response = await buildResponse(primaryContactId);
+
+  return { contact: response };
 }
-async function handleNonExistingContact(
+
+const checkIfPrimaryContactExists = (primaryContacts: Contact[]): boolean => {
+  let isExists: boolean;
+  if (primaryContacts.length > 0) {
+    isExists = true;
+  } else {
+    isExists = false;
+  }
+  return isExists;
+};
+
+const createNewContact = async (
   email: string,
   phoneNumber: string,
-  responseContact: ContactJson
-) {
-  const contact: Contact = {
+  linkPrecedence: "primary" | "secondary",
+  linkedId: number | null
+): Promise<Contact> => {
+  const newContact: Contact = {
     email: email,
     phoneNumber: phoneNumber,
-    linkPrecedence: "primary",
+    linkPrecedence: linkPrecedence,
+    ...(linkedId && { linkedId: linkedId }),
   };
 
-  const insertedContact = await insertContact(contact);
-  const primaryContactId: number = insertedContact.id || 0;
-  const emails = [];
-  const phoneNumbers = [];
+  const insertedContact: Contact = await insertContact(newContact);
+  return insertedContact;
+};
 
-  emails.push(insertedContact.email !== undefined ? insertedContact.email : "");
-  phoneNumbers.push(
-    insertedContact.phoneNumber !== undefined ? insertedContact.phoneNumber : ""
-  );
+const checkExistingContact = async (
+  email: string,
+  phoneNumber: string
+): Promise<boolean> => {
+  return await readExistingContact(email, phoneNumber);
+};
 
-  responseContact = {
-    primaryContactId: primaryContactId,
-    emails: emails,
-    phoneNumbers: phoneNumbers,
-    secondaryContactIds: [],
-  };
-  return { __return: { contact: responseContact }, responseContact };
-}
-
-async function handleMultipleMatchingContacts(
-  matchingContacts: Contact[],
-  responseContact: ContactJson
-) {
+const handleTwoPrimaryContacts = async (
+  primaryContacts: Contact[]
+): Promise<number> => {
   const latestContact = getLatestContact(
-    matchingContacts[0],
-    matchingContacts[1]
+    primaryContacts[0],
+    primaryContacts[1]
   ); // Passing 0th and 1st element since not more than 2 records can exist
-  const earliestContact = matchingContacts.find(
+
+  const earliestContact = primaryContacts.find(
     (contact) => contact.id !== latestContact.id
   );
   latestContact.linkedId = earliestContact?.id;
@@ -156,39 +118,45 @@ async function handleMultipleMatchingContacts(
     latestContact.id!
   );
 
-  // Set the primary contact id
-  responseContact.primaryContactId = earliestContact?.id!;
+  return earliestContact?.id!;
+};
 
-  // Set the emails
-  responseContact.emails.push(earliestContact?.email!);
-  responseContact.emails.push(latestContact?.email!);
+const buildResponse = async (
+  primaryContactId: number
+): Promise<ContactJson> => {
+  // Use the primary contact id to fetch the primary contact and all its secondary contact
+  const primaryAndSecondaryContacts: Contact[] =
+    await getPrimaryAndSecondaryContactsBasedOnPrimaryId(primaryContactId);
 
-  // Set the phoneNumbers
-  responseContact.phoneNumbers.push(earliestContact?.phoneNumber!);
-  responseContact.phoneNumbers.push(latestContact?.phoneNumber!);
-
-  // Set the secondaryContactIds
-  responseContact.secondaryContactIds.push(latestContact.id!);
-
-  return { contact: responseContact };
-}
-
-async function createNewContact(
-  email: string,
-  phoneNumber: string,
-  responseContact: ContactJson
-) {
-  const newContact: Contact = {
-    email: email,
-    phoneNumber: phoneNumber,
-    linkPrecedence: "primary",
+  const responseJson: ContactJson = {
+    primaryContactId: 0,
+    emails: [],
+    phoneNumbers: [],
+    secondaryContactIds: [],
   };
 
-  const insertedContact: Contact = await insertContact(newContact);
-  responseContact.primaryContactId = insertedContact.id!;
+  const primaryContact: Contact = primaryAndSecondaryContacts.find(
+    (contact) => contact.linkPrecedence === "primary"
+  )!;
+  responseJson.primaryContactId = primaryContact.id!;
+  responseJson.emails.push(primaryContact.email!);
+  responseJson.phoneNumbers.push(primaryContact.phoneNumber!);
 
-  responseContact.emails.push(insertedContact.email!);
-  responseContact.phoneNumbers.push(insertedContact.phoneNumber!);
+  primaryAndSecondaryContacts.forEach((contact) => {
+    if (contact.linkPrecedence === "secondary") {
+      responseJson.emails.push(contact.email!);
+      responseJson.phoneNumbers.push(contact.phoneNumber!);
+      responseJson.secondaryContactIds.push(contact.id!);
+    }
+  });
 
-  return { contact: responseContact };
-}
+  responseJson.emails = [...new Set(responseJson.emails.filter(Boolean))];
+  responseJson.phoneNumbers = [
+    ...new Set(responseJson.phoneNumbers.filter(Boolean)),
+  ];
+  responseJson.secondaryContactIds = [
+    ...new Set(responseJson.secondaryContactIds.filter(Boolean)),
+  ];
+
+  return responseJson;
+};
